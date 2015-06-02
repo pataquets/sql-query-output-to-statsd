@@ -88,7 +88,7 @@ use autodie;
 use Getopt::Long;
 
 {
-    package Clustrix::Monitoring;
+    package MySQL::Monitoring;
     
     use strict;
     use warnings;
@@ -218,7 +218,7 @@ GetOptions (
     'no_send_metric' => \my $no_send_metric,
 ) or die $!;
 
-my $monitor = Clustrix::Monitoring->new(config_file => $ARGV[0], debug => $debug, no_send_metric => $no_send_metric);
+my $monitor = MySQL::Monitoring->new(config_file => $ARGV[0], debug => $debug, no_send_metric => $no_send_metric);
 
 $sleep_seconds ||= $monitor->sleep_duration;
 
