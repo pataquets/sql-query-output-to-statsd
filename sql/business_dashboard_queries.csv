@@ -1,0 +1,1 @@
+generic.business.project.stat_1h; SELECT CONCAT('generic.business.project.stat.', t.label, '_1h') as name, COUNT(1) as value FROM table_name t GROUP BY label

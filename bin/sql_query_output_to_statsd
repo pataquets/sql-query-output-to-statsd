@@ -1,0 +1,229 @@
+#!/opt/perl/bin/perl
+
+=head1 NAME
+
+sql_query_output_to_statsd - send sql data to statsd
+
+=head1 SYNOPSIS
+
+ sql_query_output_to_statsd <CONFIG_FILE> {<OPTIONS>}
+
+=head1 ARGUMENTS
+
+=over
+
+=item <CONFIG_FILE>
+
+Absolute path to config file conforming to the specification used by B<Config::General>.
+
+=back
+
+=head1 CONFIGURATION
+
+=over
+
+=item statsd_hostname
+
+Hostname or IP address of the statsd service to which metrics should be sent.
+
+=item statsd_port
+
+Port that the receiving statsd service is listening on. Defaults to 8125.
+
+=item  dsn
+
+B<DBI> data source name. See the documentation for B<DBI>. 
+=back
+
+=item user
+
+User to which the script should connect to the database as.
+
+=item pass
+
+Password to autheticate B<user> with.
+
+=item query_csv_file
+
+Path to a CSV file containing the SQL statements to execute. If the path is not
+absolute it assumed to be C<$Bin/../sql/FILENAME>
+
+The CSV separator character must be C<;>. A header row, if included, should be
+have the value C<name> for cell A0. Each subsequent row should contain I<2>
+values, each consisting of an statement identifier as column A and the SQL
+statement itself as column B.
+
+=back
+
+=head1 OPTIONS
+
+=over
+
+=item --debug
+
+If this option is passed the SQL statements to be executed, the return values
+and the data to be sent to statsd are printed.
+
+=item --no_send_metric
+
+Don't actually send the metric to statsd. "Sending <METRIC>" will still be
+printed in debug mode.
+
+=item --once
+
+Exit after a single execution of the query set instead of looping indefinitely.
+
+=item --every INTEGER
+
+Execute the SQL statements every INTEGER seconds. Defaults to 5.
+
+=back
+
+=cut
+
+use strict;
+use warnings;
+use 5.010;
+use autodie;
+use Getopt::Long;
+
+{
+    package Clustrix::Monitoring;
+    
+    use strict;
+    use warnings;
+    use 5.010;
+    use Config::General;
+    use DBI;
+    use Data::Dumper;
+    use Text::CSV_XS;
+    use Net::Statsd;
+    use FindBin qw($Bin);
+    use File::Spec;
+    use autodie;
+    
+    sub new {
+        my($class, %args) = @_;
+        my $self = {};
+        bless $self, $class;
+        $self->_init( %args );
+        return $self;
+    }
+    
+    sub _init {
+        my($self, %args) = @_;
+        $self->_config_init(%args);
+        $self->_statsd_init();
+    }
+    
+    sub _statsd_init {
+        my $self = shift;
+    
+        $Net::Statsd::HOST = $self->{config}{statsd_hostname};
+        $Net::Statsd::PORT = $self->{config}{statsd_port} || 8125;
+        say "Using hostname: $Net::Statsd::HOST:$Net::Statsd::HOST" if $self->debug;
+        say "Using port: $Net::Statsd::HOST:$Net::Statsd::PORT" if $self->debug;
+    }
+    
+    sub _config_init {
+        my($self, %args) = @_;
+        $self->{config} = { Config::General->new( -ConfigFile => $args{config_file} )->getall };
+        my $query_file = $self->{config}{query_csv_file};
+        $query_file = File::Spec->file_name_is_absolute($query_file) ? $query_file : "$Bin/../sql/$query_file";
+        $self->{config}{query_csv_file} = $query_file;
+        $self->{opts} = \%args;
+    }
+    
+    sub debug {
+        my ($self) = @_;
+        return $self->{opts}{debug};
+    }
+    
+    sub sleep_duration {
+        my ($self) = @_;
+        return $self->{config}{sleep} || 60;
+    }
+    
+    sub no_send_metric {
+        my ($self) = @_;
+        return $self->{opts}{no_send_metric};
+    }
+    
+    sub get_dbh {
+        my ($self, $opts) = @_;
+    
+        my %defaults = (
+            AutoCommit => 0,
+            RaiseError => 1,
+            PrintError => 0,
+            ShowErrorStatement => 1,
+        );
+    
+        %defaults = (%defaults, %{ $opts || {} });
+        return DBI->connect($self->{config}{dsn}, $self->{config}{user}, $self->{config}{pass}, \%defaults);
+    }
+    
+    sub fetch_statements {
+    	my($self) = @_;
+        my $csv = Text::CSV_XS->new({ sep_char => ';'});
+        open my $fh, '<', $self->{config}{query_csv_file};
+        my $data = $csv->getline_all($fh);
+        shift @{$data} if lc $data->[0][0] eq "name";
+        return $data;
+    }
+    
+    
+    sub run {
+        my($self) = @_;
+       
+        my $queries = $self->fetch_statements();
+    
+        my $dbh = $self->get_dbh();
+        my $sth = $dbh->prepare("SELECT VERSION()");
+        $sth->execute();
+        my($version) = $sth->fetchrow_array;
+        $sth->finish;
+    
+        foreach my $row (@{$queries}) {
+            my ($item, $sql) = @{$row};
+            next if (!defined($item) || !defined($sql));
+    
+            say "$item - $sql" if $self->debug;
+            my $sth = $dbh->prepare( $sql );
+            $sth->execute;
+    
+            while (my $ref = $sth->fetchrow_hashref() ) {
+                if (defined($ref->{'name'}) && defined($ref->{'value'})) {
+                    my ($name, $value) = @{$ref}{ qw(name value) };
+                    print "Sending: name $name, value: $value\n" if $self->debug;
+                    Net::Statsd::gauge($name, $value) unless $self->no_send_metric;
+                } else {
+                    local $Data::Dumper::Terse = 1;
+                    local $Data::Dumper::Indent = 1;
+                    print "Name or value not defined: " . Dumper($ref) if $self->debug;
+                }
+            }
+            $sth->finish;
+        }
+        $dbh->disconnect();
+}
+
+1;
+}
+
+GetOptions (
+    'once' => \my $once,
+    'every=i' => \my $sleep_seconds,
+    'debug' => \my $debug,
+    'no_send_metric' => \my $no_send_metric,
+) or die $!;
+
+my $monitor = Clustrix::Monitoring->new(config_file => $ARGV[0], debug => $debug, no_send_metric => $no_send_metric);
+
+$sleep_seconds ||= $monitor->sleep_duration;
+
+while ( 1 ) {
+    $monitor->run();
+    last if $once;
+    sleep($sleep_seconds);
+}
