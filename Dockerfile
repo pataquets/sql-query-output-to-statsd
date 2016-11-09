@@ -5,6 +5,7 @@ ADD . /usr/src/
 RUN \
   cpanm \
     Config::General \
+    DBD::mysql \
     DBI \
     File::Spec \
     Net::Statsd \
