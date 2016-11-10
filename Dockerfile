@@ -15,4 +15,4 @@ RUN \
   && \
   unlink conf/enabled/example.conf
 
-CMD [ "perl", "bin/sql_query_output_to_statsd" ]
+ENTRYPOINT [ "perl", "bin/sql_query_output_to_statsd" ]
