@@ -1,7 +1,5 @@
 FROM perl
 
-WORKDIR /usr/src/
-ADD . /usr/src/
 RUN \
   cpanm \
     Config::General \
@@ -11,8 +9,9 @@ RUN \
     Net::Statsd \
     Text::CSV_XS \
   && \
-  rm -rf ~/.cpanm/ \
-  && \
-  unlink conf/enabled/example.conf
+  rm -rf ~/.cpanm/
+
+WORKDIR /usr/src/
+ADD . /usr/src/
 
 ENTRYPOINT [ "perl", "bin/sql_query_output_to_statsd" ]
